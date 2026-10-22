@@ -512,7 +512,8 @@ struct EyedropperPick {
     uv: (f32, f32),
     key: FrameKey,
     time: Tick,
-    /// The project with the armed effect switched off, so a colour that effect keys out can be picked.
+    /// The project as the eyedropper samples it: the armed effect switched off (so a colour it keys
+    /// out can be picked), or its curve stages switched off.
     project: std::sync::Arc<filmcraft_project::Project>,
 }
 
@@ -523,7 +524,8 @@ const EYEDROPPER_SCALE: f32 = 0.5;
 /// Curves), the Program picture takes a crosshair and a click fills that parameter with the colour
 /// under the pointer. The colour is read from a render of the sequence at the playhead; a colour
 /// eyedropper switches the armed effect off (an Ultra Key has already removed the green it is asked
-/// to key), a curve eyedropper samples the frame as displayed. Esc disarms.
+/// to key), a curve eyedropper switches the curve stages off, so it samples what enters the curve —
+/// its x axis — and not the curve's own output. Esc disarms.
 fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, pic: Rect, target: Target, rate: filmcraft_time::FrameRate, time: Tick) {
     let Some(armed) = app.ui.eyedropper.clone() else { return };
     let ctx = ui.ctx().clone();
@@ -543,14 +545,21 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
     {
         let uv = (((pos.x - pic.min.x) / pic.width()).clamp(0.0, 1.0), ((pos.y - pic.min.y) / pic.height()).clamp(0.0, 1.0));
         let mut project = (*app.session.project).clone();
-        // a curve eyedropper picks the colour the viewer shows, so it leaves the effect on
-        if armed.curve.is_none()
-            && let Some(e) = project
-                .sequence_mut(seq)
-                .and_then(|q| q.find_item_mut(filmcraft_project::ClipId(armed.clip)))
-                .and_then(|(_, it)| it.effects.get_mut(armed.effect))
+        if let Some(e) =
+            project.sequence_mut(seq).and_then(|q| q.find_item_mut(filmcraft_project::ClipId(armed.clip))).and_then(|(_, it)| it.effects.get_mut(armed.effect))
         {
-            e.enabled = false;
+            if armed.curve.is_some() {
+                // a curve's x axis is the tone entering it, and the curve sits after Basic
+                // Correction, Creative and the wheels but before HSL Secondary: switch the Curves
+                // and HSL Secondary sections off, so the sample is the curve's input, not its output
+                for id in ["curves_on", "hsl_on"] {
+                    if let Some(p) = e.param_mut(id) {
+                        p.value = filmcraft_project::ParamValue::Bool(false);
+                    }
+                }
+            } else {
+                e.enabled = false;
+            }
         }
         let frame = rate.frame_at(time);
         // a revision of its own, so this render never replaces what the monitor caches
